@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Test Persistence</title></head>
+<body>
+<iframe id="app" src="../mapa-brasil-municipios.html" style="width:1280px;height:800px;"></iframe>
+<script>
+window.onload = async () => {
+  const iframe = document.getElementById('app');
+  if (!iframe.contentDocument || iframe.contentDocument.readyState !== 'complete') {
+    await new Promise(r => iframe.onload = r);
+  }
+  const win = iframe.contentWindow;
+
+  if (!win.BasesUI || !win.BasesUI.storage) {
+    document.body.innerHTML = '<h1 id="result" style="color:red">FAIL: No storage</h1>';
+    return;
+  }
+
+  // 1. Clear any old data
+  await win.BasesUI.storage.clearAll();
+
+  // 2. Save a test slot in IndexedDB
+  const testDataset = {
+    total: 42,
+    people: [{ id: 'p1', name: 'Ana', records: [{ row: 2, contactName: 'Cliente 1', person: 'Ana', city: 'São Paulo/SP', stage: 'quali' }] }],
+    allRecords: [{ row: 2, contactName: 'Cliente 1', person: 'Ana', city: 'São Paulo/SP', stage: 'quali' }],
+    skipped: 0,
+    stage: 'quali',
+    stageLabel: 'Qualificação'
+  };
+  await win.BasesUI.storage.saveSlot('quali', {
+    stage: 'quali',
+    fileName: 'teste_f5.xlsx',
+    currentSheet: 'Sheet1',
+    dataset: testDataset
+  });
+
+  // 3. Reload the iframe (simulate F5!)
+  await new Promise((resolve) => {
+    iframe.onload = resolve;
+    iframe.src = '../mapa-brasil-municipios.html?t=' + Date.now();
+  });
+
+  const win2 = iframe.contentWindow;
+  const doc2 = iframe.contentDocument;
+
+  // Wait for initStorage to finish hydrating
+  let waited = 0;
+  while (waited < 50 && (!doc2.getElementById('slot-quali') || !doc2.getElementById('slot-quali').classList.contains('is-loaded'))) {
+    await new Promise(r => setTimeout(r, 100));
+    waited++;
+  }
+
+  const slotQuali = doc2.getElementById('slot-quali');
+  const countTabQuali = doc2.getElementById('tab-count-quali');
+  const countTabAll = doc2.getElementById('tab-count-all');
+
+  const isLoaded = slotQuali && slotQuali.classList.contains('is-loaded');
+  const qualiCountText = countTabQuali ? countTabQuali.textContent.trim() : '';
+  const allCountText = countTabAll ? countTabAll.textContent.trim() : '';
+
+  if (isLoaded && qualiCountText === '42' && allCountText === '42') {
+    document.body.innerHTML = '<h1 id="result" style="color:green">PASS: F5 RESTORE SUCCESS</h1>';
+  } else {
+    document.body.innerHTML = `<h1 id="result" style="color:red">FAIL: isLoaded=${isLoaded}, qualiCount=${qualiCountText}, allCount=${allCountText}</h1>`;
+  }
+};
+</script>
+</body>
+</html>

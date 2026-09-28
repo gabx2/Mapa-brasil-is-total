@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "jsdom": "^29.1.1",
+    "leaflet": "^1.9.4",
+    "mapshaper": "^0.7.61",
+    "topojson-client": "^3.1.0"
+  }
+}

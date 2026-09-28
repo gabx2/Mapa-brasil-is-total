@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mapa do Brasil</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="dados/municipios-index.js"></script>
+<script src="dados/paises.js"></script>
+<script src="bases-data.js?v=20260922-stock"></script>
+<link rel="stylesheet" href="bases.css?v=20260922-tag-search">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: #fff; color: #171717; height: 100vh; overflow: hidden; }
+
+  /* Mapa ocupa tudo: fundo com tom suave de mar/oceano */
+  #map { width: 100vw; height: 100vh; height: 100dvh; background: #e2ecf5; }
+  .leaflet-container { background: #e2ecf5 !important; }
+
+  /* Países vizinhos: camada de fundo sutil, minimalista e não clicável */
+  .world-country { cursor: grab !important; outline: none !important; }
+  #map:active .world-country, .world-country:active { cursor: grabbing !important; }
+  .world-tooltip {
+    font-family: 'Inter', sans-serif !important;
+    background: #ffffff !important;
+    color: #64748b !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 6px !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    padding: 3px 8px !important;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08) !important;
+    pointer-events: none !important;
+  }
+  .world-tooltip::before { display: none !important; }
+  /* O foco dos polígonos segue seu contorno, sem a caixa retangular do navegador. */
+  .leaflet-interactive:focus { outline: none; }
+  .leaflet-interactive:focus-visible { stroke: #ff0d36; stroke-width: 2; }
+  /* Cópia visual elevada; a área de clique continua na posição original. */
+  .state-relief {
+    pointer-events: none !important;
+    fill: #fff;
+    stroke: #ff0d36;
+    stroke-width: 1.5;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: translateY(0) scale(1);
+    filter: drop-shadow(0 0 0 transparent);
+    transition: transform 180ms ease, filter 180ms ease;
+  }
+  .state-relief.is-raised {
+    transform: translateY(-6px) scale(1.025);
+    filter: drop-shadow(0 8px 7px rgba(35, 44, 62, .28));
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .state-relief.is-raised { transform: none; filter: drop-shadow(0 3px 3px rgba(35, 44, 62, .2)); }
+  }
+  .bottom-left-dock { position: absolute; bottom: 24px; left: 24px; z-index: 1000; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .map-tools { display: flex; align-items: center; gap: 8px; }
+  .zoom-group { display: flex; align-items: center; padding: 5px; background: #fff; border: 1px solid #e3e7eb; border-radius: 16px; box-shadow: 0 6px 24px #17203312; }
+  .map-tools button { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 11px; background: #fff; color: #303640; cursor: pointer; transition: background .15s, color .15s; }
+  .map-tools button:hover:not(:disabled) { background: #fff0f3; color: #e90835; }
+  .map-tools button:focus-visible { outline: 3px solid #ff0d36; outline-offset: 2px; }
+  .map-tools button:disabled { opacity: .3; cursor: default; }
+  .map-tools svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  #zoom-value { min-width: 60px; text-align: center; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: #626b78; }
+  .map-tools .divider { height: 24px; width: 1px; background: #e9edf0; margin: 0 5px; }
+  #panel { position: absolute; top: 18px; right: 18px; width: 356px; max-width: calc(100vw - 32px); z-index: 1000; }
+  .search-field { display: flex; align-items: center; background: #fff; border: 1px solid #e3e7eb; border-radius: 14px; box-shadow: 0 4px 20px #17203312; overflow: hidden; }
+  .search-field:focus-within { border-color: #ff0d36; box-shadow: 0 0 0 3px #ff0d3612; }
+  @media (max-width: 640px) {
+    #panel { top: 12px; right: 16px; left: 16px; width: auto; }
+    .bottom-left-dock { bottom: 16px; left: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+
+  /* Tooltip personalizado */
+  .leaflet-tooltip {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 12px !important;
+    border: 1.5px solid #efefef !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,.08) !important;
+    color: #171717 !important;
+    padding: 6px 10px !important;
+  }
+
+  /* Loading */
+  #loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    border: 1.5px solid #efefef;
+    border-radius: 14px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.08);
+    padding: 20px 28px;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    z-index: 2000;
+  }
+
+  #loading.show { display: flex; }
+  .spin { width: 26px; height: 26px; border: 3px solid #f0f0f0; border-top-color: #ff0d36; border-radius: 50%; animation: sp .7s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  #loading p { font-size: 13px; color: #888; white-space: nowrap; }
+
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div class="bottom-left-dock">
+  <div id="upload-dock">
+    <div class="dock-header">
+      <span class="dock-title">Importar planilhas</span>
+    </div>
+    <div id="bases-upload-grid" class="upload-grid" aria-label="Importar planilhas por etapa">
+      <div class="upload-slot" data-stage="quali" id="slot-quali" tabindex="0" role="button" aria-label="Importar Qualificação">
+        <div class="slot-head">
+          <span class="slot-title"><i class="slot-dot dot-quali"></i>QUALIFICAÇÃO</span>
+          <button type="button" class="slot-remove" title="Remover planilha" hidden>×</button>
+        </div>
+        <span class="slot-info">Aguardando XLS</span>
+      </div>
+      <div class="upload-slot" data-stage="frio" id="slot-frio" tabindex="0" role="button" aria-label="Importar Negociação Fria">
+        <div class="slot-head">
+          <span class="slot-title"><i class="slot-dot dot-frio"></i>FRIA</span>
+          <button type="button" class="slot-remove" title="Remover planilha" hidden>×</button>
+        </div>
+        <span class="slot-info">Aguardando XLS</span>
+      </div>
+      <div class="upload-slot" data-stage="morna" id="slot-morna" tabindex="0" role="button" aria-label="Importar Negociação Morna">
+        <div class="slot-head">
+          <span class="slot-title"><i class="slot-dot dot-morna"></i>MORNA</span>
+          <button type="button" class="slot-remove" title="Remover planilha" hidden>×</button>
+        </div>
+        <span class="slot-info">Aguardando XLS</span>
+      </div>
+      <div class="upload-slot" data-stage="quente" id="slot-quente" tabindex="0" role="button" aria-label="Importar Negociação Quente">
+        <div class="slot-head">
+          <span class="slot-title"><i class="slot-dot dot-quente"></i>QUENTE</span>
+          <button type="button" class="slot-remove" title="Remover planilha" hidden>×</button>
+        </div>
+        <span class="slot-info">Aguardando XLS</span>
+      </div>
+    </div>
+    <!-- Hidden input and button for test and backward-compatibility -->
+    <button id="bases-upload" type="button" hidden></button>
+    <input id="bases-file" type="file" accept=".csv,.xls,.xlsx" hidden>
+    <div id="bases-sheet-field" hidden><label for="bases-sheet">Aba da planilha</label><select id="bases-sheet"></select></div>
+    <p id="bases-file-status" class="bases-note" role="status" aria-live="polite" hidden></p>
+    <p id="bases-error" role="alert" hidden></p>
+  </div>
+  <nav class="map-tools" aria-label="Navegação do mapa">
+    <div class="zoom-group">
+      <button id="zoom-out" type="button" title="Diminuir zoom (−)" aria-label="Diminuir zoom" disabled><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <output id="zoom-value" aria-label="Ampliação do mapa">100%</output>
+      <button id="zoom-in" type="button" title="Aumentar zoom (+)" aria-label="Aumentar zoom" disabled><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg></button>
+      <span class="divider"></span>
+      <button id="fit-map" type="button" title="Enquadrar área atual" aria-label="Enquadrar área atual" disabled><svg viewBox="0 0 24 24"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
+      <button id="home-map" type="button" title="Voltar ao Brasil" aria-label="Voltar ao Brasil" disabled><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-7h6v7"/></svg></button>
+    </div>
+  </nav>
+</div>
+
+<div id="panel">
+  <section id="bases-panel" aria-label="Bases por pessoa">
+    <div class="bases-heading"><h2>Bases por pessoa</h2><button id="bases-clear" type="button" hidden>Limpar filtro</button></div>
+    <section class="squad-picker" aria-label="Squads">
+      <div class="squad-heading"><label id="squad-label" for="squad-trigger">Squad</label><button id="squad-new" type="button">+ Criar squad</button></div>
+      <div class="squad-row">
+        <div class="squad-dropdown">
+          <select id="squad-select" hidden aria-hidden="true" tabindex="-1"><option value="">Sem squad · todas as bases</option></select>
+          <button id="squad-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="squad-menu" aria-labelledby="squad-label squad-current"><span id="squad-current">Sem squad · todas as bases</span><span class="squad-chevron" aria-hidden="true">⌄</span></button>
+          <div id="squad-menu" role="listbox" aria-label="Selecionar squad" hidden></div>
+        </div>
+        <button id="squad-edit" type="button" disabled>Editar</button>
+      </div>
+      <p id="squad-summary" class="bases-note"></p>
+      <p id="squad-storage-status" role="status" class="bases-note"></p>
+    </section>
+    <nav id="bases-stage-tabs" class="stage-tabs" role="tablist" aria-label="Filtrar por etapa">
+      <button type="button" role="tab" class="stage-tab is-active" data-stage="all" aria-selected="true">
+        <span class="stage-tab-label">TUDO</span>
+        <span class="stage-tab-count" id="tab-count-all">0</span>
+      </button>
+      <button type="button" role="tab" class="stage-tab" data-stage="quali" aria-selected="false" disabled>
+        <span class="stage-tab-label"><i class="stage-tab-dot dot-quali"></i>QUALIFICAÇÃO</span>
+        <span class="stage-tab-count" id="tab-count-quali">0</span>
+      </button>
+      <button type="button" role="tab" class="stage-tab" data-stage="frio" aria-selected="false" disabled>
+        <span class="stage-tab-label"><i class="stage-tab-dot dot-frio"></i>FRIA</span>
+        <span class="stage-tab-count" id="tab-count-frio">0</span>
+      </button>
+      <button type="button" role="tab" class="stage-tab" data-stage="morna" aria-selected="false" disabled>
+        <span class="stage-tab-label"><i class="stage-tab-dot dot-morna"></i>MORNA</span>
+        <span class="stage-tab-count" id="tab-count-morna">0</span>
+      </button>
+      <button type="button" role="tab" class="stage-tab" data-stage="quente" aria-selected="false" disabled>
+        <span class="stage-tab-label"><i class="stage-tab-dot dot-quente"></i>QUENTE</span>
+        <span class="stage-tab-count" id="tab-count-quente">0</span>
+      </button>
+    </nav>
+    <div class="person-picker">
+      <div class="search-field">
+        <input id="person-search" type="text" role="combobox" aria-label="Buscar pessoa ou TOTAL" aria-autocomplete="list" aria-expanded="false" aria-controls="person-options" placeholder="Importe uma planilha para buscar" autocomplete="off" disabled>
+        <button id="person-toggle" type="button" aria-label="Mostrar pessoas" disabled>⌄</button>
+      </div>
+      <div id="person-options" role="listbox" aria-label="Pessoas da planilha" hidden></div>
+    </div>
+    <section id="bases-results" aria-label="Bases da pessoa selecionada" hidden>
+      <h3 id="bases-person-name"></h3>
+      <p id="bases-summary" role="status" aria-live="polite"></p>
+      <div class="bases-result-actions"><span><i></i>Municípios com bases</span><button id="bases-fit" type="button">Ver todas</button></div>
+      <p class="bases-note">Localização por município, sem endereço exato.</p>
+      <div id="bases-cities"></div>
+      <section id="bases-contacts" hidden aria-label="Contatos do município selecionado">
+        <div class="bases-contacts-head">
+          <div>
+            <h4 id="bases-contacts-title">Contatos no município</h4>
+            <small id="bases-contacts-count"></small>
+          </div>
+          <button id="bases-contacts-close" type="button" aria-label="Fechar lista de contatos" title="Fechar contatos">×</button>
+        </div>
+        <div id="bases-contacts-list"></div>
+      </section>
+      <details id="bases-pending" hidden><summary id="bases-pending-title"></summary><div id="bases-pending-list"></div></details>
+    </section>
+  </section>
+</div>
+
+<dialog id="squad-dialog" aria-labelledby="squad-dialog-title">
+  <form id="squad-form">
+    <h2 id="squad-dialog-title">Criar squad</h2>
+    <p class="squad-help">Escolha as pessoas e use um, dois ou três filtros. O registro precisa atender a todos os filtros ativados.</p>
+    <label class="squad-field" for="squad-name">Nome do squad<input id="squad-name" maxlength="100" placeholder="Ex.: SUL, BRASIL +500, Ex-cliente" required></label>
+    <fieldset>
+      <details id="squad-section-members" class="squad-section" open>
+        <summary class="squad-section-header"><legend>1. Pessoas do squad</legend><span class="squad-section-badge" id="squad-badge-members"></span></summary>
+        <div class="squad-section-body">
+      <p class="squad-help">Cole a coluna de nomes do Sheets para adicionar e marcar todos de uma vez. Sem seleção, inclui todas as pessoas.</p>
+      <label class="squad-field" for="squad-member-list">Colar lista de pessoas<textarea id="squad-member-list" rows="3" placeholder="Cole aqui os nomes copiados do Sheets, um por linha"></textarea></label>
+      <p class="squad-help">Ao colar, os nomes são selecionados automaticamente. Repetidos são ignorados e as seleções anteriores são mantidas.</p>
+      <button id="squad-add-list" type="button">Adicionar nomes da lista</button>
+      <p id="squad-member-status" role="status" class="squad-help"></p>
+      <div class="squad-row"><input id="squad-member-search" aria-label="Buscar ou adicionar pessoa ao squad" placeholder="Buscar ou digitar nome completo"><button id="squad-add-member" type="button">Adicionar nome</button></div>
+      <div id="squad-members" class="squad-checklist"></div>
+      <p id="squad-member-empty" class="squad-help">Importe uma planilha para listar pessoas ou adicione os nomes acima.</p>
+        </div>
+      </details>
+    </fieldset>
+    <fieldset>
+      <details id="squad-section-states" class="squad-section">
+        <summary class="squad-section-header"><legend>2. Estados</legend><span class="squad-section-badge" id="squad-badge-states"></span></summary>
+        <div class="squad-section-body">
+      <label class="squad-toggle"><input id="squad-use-states" type="checkbox">Filtrar por estados</label>
+      <p class="squad-help">Desativado: todos os estados. Marque quantos estados quiser.</p>
+      <div id="squad-states-fields" hidden>
+        <p class="squad-help" style="margin-top:2px">Atalhos de região:</p>
+        <div id="squad-region-presets" class="squad-region-presets">
+          <button type="button" class="squad-region-btn" data-region="noneco">NONECO</button>
+          <button type="button" class="squad-region-btn" data-region="sul">SUL</button>
+          <button type="button" class="squad-region-btn" data-region="rjmges">RJ · MG · ES</button>
+          <button type="button" class="squad-region-btn" data-region="all">Todos</button>
+          <button type="button" class="squad-region-btn" data-region="none">Limpar</button>
+        </div>
+        <p class="squad-help">NONECO = Norte + Nordeste + Centro-Oeste. Os estados individuais continuam abaixo.</p>
+        <div id="squad-states" class="squad-checklist squad-state-list"></div>
+      </div>
+        </div>
+      </details>
+    </fieldset>
+    <fieldset>
+      <details id="squad-section-tag" class="squad-section">
+        <summary class="squad-section-header"><legend>3. Tag</legend><span class="squad-section-badge" id="squad-badge-tag"></span></summary>
+        <div class="squad-section-body">
+      <label class="squad-toggle"><input id="squad-use-tag" type="checkbox">Adicionar filtro de tag</label>
+      <div id="squad-tag-fields" hidden>
+        <label class="squad-field" for="squad-tag-search">Buscar nas tags das planilhas<input id="squad-tag-search" type="search" placeholder="Digite parte do nome, ex.: cliente, cidade, MKT" autocomplete="off"></label>
+        <p id="squad-tag-count" class="squad-help" role="status"></p>
+        <div id="squad-tag-results" aria-label="Tags encontradas"></div>
+        <button id="squad-tag-more" type="button" hidden>Mostrar mais 8 tags</button>
+        <p class="squad-help">Clique nas tags acima para selecionar. Você pode selecionar várias. Registros que tiverem <strong>qualquer uma</strong> das tags selecionadas serão incluídos.</p>
+        <label class="squad-field">Tags selecionadas</label>
+        <div id="squad-tag-list" class="squad-tag-list"></div>
+        <p class="squad-help">Qualquer tag que contenha "Ex-Cliente" (como Imóveis - Ex-Cliente, Imóveis - Reativa Ex-Cliente, etc.) e também "Reativa" são todas tratadas como a mesma tag Ex-cliente.</p>
+      </div>
+        </div>
+      </details>
+    </fieldset>
+    <fieldset>
+      <details id="squad-section-stock" class="squad-section">
+        <summary class="squad-section-header"><legend>4. Estoque</legend><span class="squad-section-badge" id="squad-badge-stock"></span></summary>
+        <div class="squad-section-body">
+      <label class="squad-toggle"><input id="squad-use-stock" type="checkbox">Adicionar filtro de estoque</label>
+      <div id="squad-stock-fields" hidden>
+        <label class="squad-field" for="squad-found-stocks">Estoques encontrados nas planilhas<select id="squad-found-stocks"></select></label>
+        <p class="squad-help">Selecione um valor para filtrar pela quantidade exata. Você também pode alterar a condição abaixo ou usar o atalho 500+.</p>
+        <button id="squad-stock-large" type="button">500+ · Grande e Enterprise</button>
+        <p class="squad-help">Este atalho seleciona estoque maior que 500. Na planilha, usamos a quantidade inicial: "758 Grande (501 - 1500)" vale 758 e "3009 Enterprise (1500+)" vale 3009.</p>
+        <div class="squad-row">
+        <label class="squad-field" for="squad-stock-op">Condição<select id="squad-stock-op"><option value="gte">A partir de (≥)</option><option value="gt">Maior que (&gt;)</option><option value="eq">Igual a (=)</option><option value="lte">Até (≤)</option><option value="lt">Menor que (&lt;)</option></select></label>
+        <label class="squad-field" for="squad-stock-value">Quantidade<input id="squad-stock-value" inputmode="decimal" placeholder="Ex.: 500"></label>
+        </div>
+      </div>
+        </div>
+      </details>
+    </fieldset>
+    <p id="squad-form-error" role="alert"></p>
+    <footer class="squad-actions"><button id="squad-delete" type="button" hidden>Excluir squad</button><button id="squad-cancel" type="button">Cancelar</button><button id="squad-save" type="submit">Salvar e aplicar</button></footer>
+  </form>
+</dialog>
+
+<!-- Loading -->
+<div id="loading"><div class="spin"></div><p id="lmsg">Carregando...</p></div>
+
+<script>
+// ── Dados ─────────────────────────────────────────────────
+const ESTADOS = {
+  AC:{id:12,nome:'Acre',r:'Norte'},
+  AL:{id:27,nome:'Alagoas',r:'Nordeste'},
+  AM:{id:13,nome:'Amazonas',r:'Norte'},
+  AP:{id:16,nome:'Amapá',r:'Norte'},
+  BA:{id:29,nome:'Bahia',r:'Nordeste'},
+  CE:{id:23,nome:'Ceará',r:'Nordeste'},
+  DF:{id:53,nome:'Distrito Federal',r:'Centro-Oeste'},
+  ES:{id:32,nome:'Espírito Santo',r:'Sudeste'},
+  GO:{id:52,nome:'Goiás',r:'Centro-Oeste'},
+  MA:{id:21,nome:'Maranhão',r:'Nordeste'},
+  MG:{id:31,nome:'Minas Gerais',r:'Sudeste'},
+  MS:{id:50,nome:'Mato Grosso do Sul',r:'Centro-Oeste'},
+  MT:{id:51,nome:'Mato Grosso',r:'Centro-Oeste'},
+  PA:{id:15,nome:'Pará',r:'Norte'},
+  PB:{id:25,nome:'Paraíba',r:'Nordeste'},
+  PE:{id:26,nome:'Pernambuco',r:'Nordeste'},
+  PI:{id:22,nome:'Piauí',r:'Nordeste'},
+  PR:{id:41,nome:'Paraná',r:'Sul'},
+  RJ:{id:33,nome:'Rio de Janeiro',r:'Sudeste'},
+  RN:{id:24,nome:'Rio Grande do Norte',r:'Nordeste'},
+  RO:{id:11,nome:'Rondônia',r:'Norte'},
+  RR:{id:14,nome:'Roraima',r:'Norte'},
+  RS:{id:43,nome:'Rio Grande do Sul',r:'Sul'},
+  SC:{id:42,nome:'Santa Catarina',r:'Sul'},
+  SE:{id:28,nome:'Sergipe',r:'Nordeste'},
+  SP:{id:35,nome:'São Paulo',r:'Sudeste'},
+  TO:{id:17,nome:'Tocantins',r:'Norte'}
+};
+
+// Malhas de exibição unificadas: estados dissolvidos dos próprios municípios.
+// Os arquivos originais permanecem em dados/; reconstrução em scripts/build-aligned-map.cjs.
+// Scripts também funcionam quando o HTML é aberto diretamente (file://).
+window.MALHAS = {};
+const malhaRequests = new Map();
+function loadMalha(key) {
+  if (window.MALHAS[key]) return Promise.resolve(window.MALHAS[key]);
+  if (malhaRequests.has(key)) return malhaRequests.get(key);
+  const promise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `dados/alinhados/${key}.js`;
+    script.onload = () => {
+      script.remove();
+      if (window.MALHAS[key]) resolve(window.MALHAS[key]);
+      else { malhaRequests.delete(key); reject(new Error(`Malha ausente: ${key}`)); }
+    };
+    script.onerror = () => {
+      script.remove();
+      malhaRequests.delete(key);
+      reject(new Error(`Não foi possível abrir dados/alinhados/${key}.js`));
+    };
+    document.head.appendChild(script);
+  });
+  malhaRequests.set(key, promise);
+  return promise;
+}
+
+// ── Smooth Wheel Zoom Handler (Inércia e fluidez contínua) ────
+L.Map.mergeOptions({
+  smoothWheelZoom: true,
+  smoothSensitivity: 1
+});
+
+L.Map.SmoothWheelZoom = L.Handler.extend({
+  addHooks: function () {
+    L.DomEvent.on(this._map._container, 'wheel', this._onWheelScroll, this);
+  },
+  removeHooks: function () {
+    L.DomEvent.off(this._map._container, 'wheel', this._onWheelScroll, this);
+  },
+  _onWheelScroll: function (e) {
+    if (!this._isWheeling) this._onWheelStart(e);
+    this._onWheeling(e);
+  },
+  _onWheelStart: function (e) {
+    var map = this._map;
+    this._isWheeling = true;
+    this._wheelMousePosition = map.mouseEventToContainerPoint(e);
+    this._centerPoint = map.getSize()._divideBy(2);
+    this._startLatLng = map.containerPointToLatLng(this._centerPoint);
+    this._wheelMouseLatLng = map.containerPointToLatLng(this._wheelMousePosition);
+    this._startZoom = map.getZoom();
+    this._moved = false;
+    this._zooming = true;
+    map._stop();
+    if (map._panAnim) map._panAnim.stop();
+    this._goalZoom = map.getZoom();
+    this._prevCenter = map.getCenter();
+    this._prevZoom = map.getZoom();
+    this._zoomAnimationId = requestAnimationFrame(this._updateWheelZoom.bind(this));
+  },
+  _onWheeling: function (e) {
+    var map = this._map;
+    this._goalZoom = this._goalZoom + L.DomEvent.getWheelDelta(e) * 0.003 * map.options.smoothSensitivity;
+    if (this._goalZoom < map.getMinZoom() || this._goalZoom > map.getMaxZoom()) {
+      this._goalZoom = map._limitZoom(this._goalZoom);
+    }
+    this._wheelMousePosition = this._map.mouseEventToContainerPoint(e);
+    this._wheelMouseLatLng = map.containerPointToLatLng(this._wheelMousePosition);
+    clearTimeout(this._timeoutId);
+    this._timeoutId = setTimeout(this._onWheelEnd.bind(this), 200);
+    L.DomEvent.preventDefault(e);
+    L.DomEvent.stopPropagation(e);
+  },
+  _onWheelEnd: function (e) {
+    this._isWheeling = false;
+    cancelAnimationFrame(this._zoomAnimationId);
+    this._map._moveEnd(true);
+  },
+  _updateWheelZoom: function () {
+    var map = this._map;
+    if ((!map.getCenter().equals(this._prevCenter)) || map.getZoom() != this._prevZoom) return;
+    this._zoom = map.getZoom() + (this._goalZoom - map.getZoom()) * 0.28;
+    this._zoom = Math.floor(this._zoom * 100) / 100;
+    var delta = this._wheelMousePosition.subtract(this._centerPoint);
+    if (delta.x === 0 && delta.y === 0) return;
+    if (map.options.smoothWheelZoom === 'center') {
+      this._center = this._startLatLng;
+    } else {
+      this._center = map.unproject(map.project(this._wheelMouseLatLng, this._zoom).subtract(delta), this._zoom);
+    }
+    if (!this._moved) {
+      map._moveStart(true, false);
+      this._moved = true;
+    }
+    map._move(this._center, this._zoom);
+    this._prevCenter = map.getCenter();
+    this._prevZoom = map.getZoom();
+    this._zoomAnimationId = requestAnimationFrame(this._updateWheelZoom.bind(this));
+  }
+});L.Map.addInitHook('addHandler', 'smoothWheelZoom', L.Map.SmoothWheelZoom);
+
+// ── Leaflet ───────────────────────────────────────────────
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const map = L.map('map', {
+  center: [-15, -54],
+  zoom: 4,
+  zoomControl: false,
+  minZoom: 2,
+  maxZoom: 14,
+  zoomSnap: 0,
+  zoomDelta: 1,
+  scrollWheelZoom: false,
+  smoothWheelZoom: true,
+  smoothSensitivity: 1,
+  zoomAnimation: !reducedMotion.matches,
+  fadeAnimation: !reducedMotion.matches,
+  bounceAtZoomLimits: false,
+  maxBoundsViscosity: 0.1,
+  attributionControl: false
+});
+map.getContainer().setAttribute('aria-label', 'Mapa interativo do Brasil. Use as setas para mover e mais ou menos para ampliar.');
+
+let estadosLayer   = null;
+let paisesLayer    = null;
+let municipiosLayer = null;
+let siglaAtual     = null;
+let allMunis       = [];
+let stateOutline = null;
+let selectedMunicipality = null;
+const stateLayers = new Map();
+let raisedState = null;
+let reliefCopy = null;
+let reliefExitTimer;
+
+function clearStateRelief(animate = false) {
+  clearTimeout(reliefExitTimer);
+  if (raisedState && estadosLayer) estadosLayer.resetStyle(raisedState);
+  raisedState = null;
+  if (!reliefCopy) return;
+  const copy = reliefCopy;
+  copy.classList.remove('is-raised');
+  if (animate && !reducedMotion.matches) {
+    reliefExitTimer = setTimeout(() => { copy.remove(); if (reliefCopy === copy) reliefCopy = null; }, 180);
+  } else { copy.remove(); reliefCopy = null; }
+}
+
+function raiseState(layer) {
+  if (siglaAtual || window.BasesUI?.hasSelection() || zoomInProgress || raisedState === layer) return;
+  clearStateRelief();
+  const path = layer.getElement();
+  if (!path) return;
+  raisedState = layer;
+  layer.bringToFront();
+  const copy = path.cloneNode(false);
+  copy.removeAttribute('tabindex');
+  copy.removeAttribute('role');
+  copy.removeAttribute('aria-label');
+  copy.removeAttribute('data-state');
+  copy.setAttribute('aria-hidden', 'true');
+  copy.setAttribute('class', 'state-relief');
+  path.parentNode.appendChild(copy);
+  reliefCopy = copy;
+  layer.setStyle({ fillColor: '#e3e7ed', color: '#a3aebc' });
+  requestAnimationFrame(() => {
+    if (reliefCopy !== copy || raisedState !== layer) return;
+    copy.getBoundingClientRect();
+    copy.classList.add('is-raised');
+  });
+}
+
+map.on('zoomstart movestart dragstart', () => {
+  clearStateRelief();
+  map.eachLayer(l => {
+    if (l._tooltip && typeof l.closeTooltip === 'function') {
+      try { l.closeTooltip(); } catch(e) {}
+    }
+  });
+});
+map.getContainer().addEventListener('mouseleave', () => clearStateRelief(true));
+
+// Painel para países vizinhos (fica abaixo do Brasil / overlayPane com zIndex 400)
+map.createPane('world-pane');
+map.getPane('world-pane').style.zIndex = 350;
+
+map.createPane('state-outline');
+map.getPane('state-outline').style.zIndex = 450;
+map.getPane('state-outline').style.pointerEvents = 'none';
+
+function carregarPaises() {
+  if (!window.PAISES || paisesLayer) return;
+  try {
+    const geo = topojson.feature(window.PAISES, window.PAISES.objects.countries);
+    const cleanRing = ring => {
+      for (let i = 0; i < ring.length - 1; i++) {
+        if (Math.abs(ring[i][0] - ring[i + 1][0]) > 180) return null;
+      }
+      return ring;
+    };
+    geo.features = geo.features.filter(f => {
+      if (f.geometry.type === 'Polygon') {
+        f.geometry.coordinates = f.geometry.coordinates.map(cleanRing).filter(Boolean);
+        return f.geometry.coordinates.length > 0;
+      } else if (f.geometry.type === 'MultiPolygon') {
+        f.geometry.coordinates = f.geometry.coordinates.map(poly => poly.map(cleanRing).filter(Boolean)).filter(poly => poly.length > 0);
+        return f.geometry.coordinates.length > 0;
+      }
+      return true;
+    });
+
+    paisesLayer = L.geoJSON(geo, {
+      pane: 'world-pane',
+      className: 'world-country',
+      smoothFactor: 0.5,
+      style: () => ({
+        fillColor: '#edf1f5',
+        color: '#cbd5e1',
+        weight: 0.6,
+        opacity: 0.95,
+        fillOpacity: 0.9
+      }),
+      onEachFeature: (f, layer) => {
+        const nome = f.properties?.name;
+        if (nome) {
+          layer.bindTooltip(nome, {
+            sticky: true,
+            opacity: 1,
+            className: 'world-tooltip'
+          });
+        }
+      }
+    }).addTo(map);
+  } catch (e) {
+    console.warn('Não foi possível carregar países vizinhos:', e);
+  }
+}
+
+let requestController = null;
+let overviewZoom = 4;
+let resizeTimer;
+let zoomInProgress = false;
+let pendingFit = null;
+let pendingSteps = 0;
+
+function mapPadding() {
+  return { paddingTopLeft: [32, 90], paddingBottomRight: [window.innerWidth > 640 ? 370 : 32, 112] };
+}
+
+function fitArea(layer, animate = true) {
+  if (!layer) return;
+  pendingSteps = 0;
+  if (zoomInProgress) { pendingFit = { layer, animate }; return; }
+  map.stop();
+  map.fitBounds(layer.getBounds(), {
+    ...mapPadding(),
+    maxZoom: 12,
+    animate: animate && !reducedMotion.matches,
+    duration: 0.5,
+    easeLinearity: 0.2
+  });
+  if (layer === estadosLayer && !animate) {
+    overviewZoom = map.getZoom();
+    map.setMinZoom(Math.max(1.5, overviewZoom - 1.0));
+    updateZoomControls();
+  }
+}
+
+function updateOverview() {
+  if (!estadosLayer) return;
+  const p = mapPadding();
+  overviewZoom = map.getBoundsZoom(estadosLayer.getBounds(), false, L.point(p.paddingTopLeft).add(p.paddingBottomRight));
+  map.setMinZoom(Math.max(1.5, overviewZoom - 1.0));
+  updateZoomControls();
+}
+
+function updateZoomControls() {
+  const ready = !!estadosLayer;
+  document.getElementById('zoom-in').disabled = !ready || map.getZoom() >= map.getMaxZoom();
+  document.getElementById('zoom-out').disabled = !ready || map.getZoom() <= map.getMinZoom();
+  document.getElementById('fit-map').disabled = !ready;
+  document.getElementById('home-map').disabled = !ready;
+  document.getElementById('zoom-value').textContent = `${Math.round(100 * Math.pow(2, map.getZoom() - overviewZoom))}%`;
+}
+
+function stepZoom(direction) {
+  map.stop();
+  const p = mapPadding();
+  const size = map.getSize();
+  const anchor = L.point((p.paddingTopLeft[0] + size.x - p.paddingBottomRight[0]) / 2, (p.paddingTopLeft[1] + size.y - p.paddingBottomRight[1]) / 2);
+  const target = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), map.getZoom() + direction * 0.8));
+  map.setZoomAround(anchor, target, {
+    animate: !reducedMotion.matches,
+    duration: 0.35,
+    easeLinearity: 0.25
+  });
+}
+
+document.getElementById('zoom-in').onclick = () => stepZoom(1);
+document.getElementById('zoom-out').onclick = () => stepZoom(-1);
+document.getElementById('fit-map').onclick = () => {
+  if (window.BasesUI?.hasSelection()) window.BasesUI.fit();
+  else fitArea(municipiosLayer || estadosLayer);
+};
+document.getElementById('home-map').onclick = () => voltarBrasil();
+map.on('zoomend zoomlevelschange', updateZoomControls);
+map.on('zoomstart', () => { zoomInProgress = true; });
+map.on('zoomend', () => {
+  zoomInProgress = false;
+  if (pendingFit) {
+    const next = pendingFit;
+    pendingFit = null;
+    fitArea(next.layer, next.animate);
+  }
+});
+map.on('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { updateOverview(); fitArea(municipiosLayer || estadosLayer, false); }, 120);
+});
+for (const id of ['panel', 'loading']) {
+  L.DomEvent.disableClickPropagation(document.getElementById(id));
+  L.DomEvent.disableScrollPropagation(document.getElementById(id));
+}
+
+// Simplificar cada arco uma única vez mantém as divisas compartilhadas encaixadas.
+// A visão nacional omite pequenas irregularidades; o detalhe usa a malha original.
+function countryGeometry(topology) {
+  const transform = topology.transform;
+  const arcs = topology.arcs.map(arc => {
+    let x = 0, y = 0;
+    const points = arc.map(point => {
+      if (!transform) return L.point(point[0], point[1]);
+      x += point[0]; y += point[1];
+      return L.point(x * transform.scale[0] + transform.translate[0],
+                     y * transform.scale[1] + transform.translate[1]);
+    });
+    const simplified = L.LineUtil.simplify(points, 0.035);
+    const closed = points[0].equals(points[points.length - 1]);
+    const result = closed && simplified.length < 4 ? points : simplified;
+    return result.map(point => [point.x, point.y]);
+  });
+  const overview = { ...topology, arcs };
+  delete overview.transform;
+  return topojson.feature(overview, overview.objects.estados);
+}
+
+const stateGeometry = new WeakMap();
+function setStateDetail(detailed) {
+  for (const layer of stateLayers.values()) {
+    const geometry = stateGeometry.get(layer);
+    layer.setLatLngs(detailed ? geometry.detail : geometry.overview);
+  }
+}
+
+// ── Carregar estados ─────────────────────────────────────
+async function carregarEstados() {
+  showLoad('Carregando mapa do Brasil...');
+  try {
+    const data = await loadMalha('estados');
+    const detail = topojson.feature(data, data.objects.estados);
+    const geo = countryGeometry(data);
+    const detailByState = new Map(detail.features.map(feature => [feature.properties.SIGLA_UF, feature]));
+
+    estadosLayer = L.geoJSON(geo, {
+      smoothFactor: 0,
+      style: () => ({ fillColor: '#ffffff', color: '#b3bdc9', weight: 0.75, opacity: 1, fillOpacity: 1, stroke: true }),
+      onEachFeature: (f, layer) => {
+        const sig  = f.properties.SIGLA_UF;
+        if (!sig) return;
+        const nome = ESTADOS[sig].nome;
+        stateLayers.set(sig, layer);
+        const detailedLayer = L.geoJSON(detailByState.get(sig)).getLayers()[0];
+        stateGeometry.set(layer, { overview: layer.getLatLngs(), detail: detailedLayer.getLatLngs() });
+        layer.on('add', () => {
+          const path = layer.getElement();
+          path.dataset.state = sig;
+          path.setAttribute('tabindex', '0');
+          path.setAttribute('role', 'button');
+          path.setAttribute('aria-label', `${nome} (${sig})`);
+          path.onfocus = () => { raiseState(layer); loadMalha(sig); };
+          path.onblur = () => { if (raisedState === layer) clearStateRelief(true); };
+          path.onkeydown = event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              carregarMunicipios(sig);
+            }
+          };
+        });
+        layer.on('mouseover', function() {
+          if (window.matchMedia('(hover: hover)').matches) {
+            raiseState(this);
+            loadMalha(sig);
+          }
+        });
+        layer.on('mouseout', function() { if (raisedState === this) clearStateRelief(true); });
+        layer.on('click', () => {
+          carregarMunicipios(sig);
+        });
+        layer.bindTooltip(`<b>${nome}</b> <span style="color:#aaa">(${sig})</span>`, { sticky: true, opacity: 1 });
+      }
+    }).addTo(map);
+
+    carregarPaises();
+
+    map.setMaxBounds(estadosLayer.getBounds().pad(0.8));
+    updateOverview();
+    fitArea(estadosLayer, false);
+    updateZoomControls();
+    hideLoad();
+  } catch(e) {
+    console.error(e);
+    document.getElementById('lmsg').textContent = 'Erro ao carregar. Recarregue (F5).';
+  }
+}
+
+// ── Carregar municípios ───────────────────────────────────
+const stateDataCache = new Map();
+const muniLayerByCode = new Map();
+let currentSelectedLayer = null;
+
+async function carregarMunicipios(sig) {
+  clearStateRelief();
+  const info = ESTADOS[sig];
+  requestController?.abort();
+  const controller = new AbortController();
+  requestController = controller;
+  showLoad(`Carregando ${info.nome}...`, 80);
+
+  try {
+    let stateCache = stateDataCache.get(sig);
+    if (!stateCache) {
+      const topology = await loadMalha(sig);
+      if (controller.signal.aborted) return;
+      const collection = Object.values(topology.objects)[0];
+      const geo = topojson.feature(topology, collection);
+      geo.features.forEach(f => { f.properties.codarea = f.properties.CD_MUN; });
+      const noms = geo.features.map(f => ({ id: f.properties.CD_MUN, nome: f.properties.NM_MUN }));
+      // Preservar os arcos compartilhados mantém as divisas encaixadas, sem arredondar cada polígono.
+      // O contorno estadual é dissolvido a partir dos mesmos municípios.
+      const outlineGeo = topojson.merge(topology, collection.geometries);
+      const lookup = {};
+      noms.forEach(m => lookup[String(m.id)] = m.nome);
+      const allMunisList = noms
+        .map(m => ({ id: String(m.id), nome: m.nome }))
+        .sort((a,b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+      stateCache = { geo, outlineGeo, lookup, allMunisList };
+      stateDataCache.set(sig, stateCache);
+    }
+    if (controller.signal.aborted) return;
+
+    clearStateDetail();
+    siglaAtual = sig;
+    window.BasesUI?.refreshState();
+    setStateDetail(true);
+    selectedMunicipality = null;
+    currentSelectedLayer = null;
+    muniLayerByCode.clear();
+
+    estadosLayer.eachLayer(l => { estadosLayer.resetStyle(l); l.closeTooltip(); l.unbindTooltip(); });
+    // Somente o estado selecionado é substituído visualmente pelos municípios.
+    // Os vizinhos mantêm o preenchimento branco, as divisas e a área de clique.
+    stateLayers.get(sig)?.setStyle({ fillOpacity: 0, stroke: false });
+
+    if (municipiosLayer) map.removeLayer(municipiosLayer);
+
+    const { geo, outlineGeo, lookup, allMunisList } = stateCache;
+    allMunis = allMunisList;
+
+    municipiosLayer = L.geoJSON(geo, {
+      smoothFactor: 0,
+      style: () => ({ fillColor: '#ffffff', color: '#c5ccd5', weight: 0.5, opacity: 1, fillOpacity: 1 }),
+      onEachFeature: (f, layer) => {
+        const cod  = String(f.properties.codarea);
+        const nome = lookup[cod] || cod;
+        muniLayerByCode.set(cod, layer);
+        layer.on('mouseover', function() {
+          this.setStyle({ fillColor: '#fff0f3' });
+        });
+        layer.on('mouseout', function() {
+          this.setStyle({ fillColor: selectedMunicipality === cod ? '#fecdd3' : '#ffffff' });
+        });
+        layer.on('click', () => selectMunicipality(cod));
+        layer.bindTooltip(`<b>${nome}</b>`, { sticky: true, opacity: 1 });
+      }
+    }).addTo(map);
+
+    stateOutline = L.geoJSON(outlineGeo, {
+      // Usa os mesmos arcos da malha municipal para não criar qualquer desvio.
+      pane: 'state-outline', interactive: false, smoothFactor: 0,
+      style: {
+        fill: false, color: '#96a2b0', weight: 1, opacity: 1,
+        lineCap: 'butt', lineJoin: 'miter'
+      }
+    }).addTo(map);
+    closeOptions();
+    // Aproxima o estado escolhido mantendo os vizinhos desenhados ao redor.
+    fitArea(municipiosLayer, false);
+
+    hideLoad();
+    return true;
+  } catch(e) {
+    if (controller.signal.aborted) return;
+    console.error(e);
+    closeOptions();
+    document.getElementById('lmsg').textContent = 'Não foi possível carregar. Selecione o estado para tentar novamente.';
+    setTimeout(() => { if (requestController === controller) hideLoad(); }, 3500);
+  }
+}
+
+// ── Voltar ao Brasil ──────────────────────────────────────
+function voltarBrasil(reenquadrar = true, limparBases = true) {
+  const estavaNoEstado = !!siglaAtual;
+  if (limparBases && !estavaNoEstado) window.BasesUI?.clearSelection();
+  requestController?.abort();
+  requestController = null;
+  hideLoad();
+  if (pendingFit?.layer === municipiosLayer) pendingFit = null;
+  clearStateDetail();
+  selectedMunicipality = null;
+  siglaAtual = null;
+  setStateDetail(false);
+  allMunis = [];
+  allMunis = [];
+  closeOptions();
+  if (estadosLayer) estadosLayer.eachLayer(l => estadosLayer.resetStyle(l));
+  if (estavaNoEstado) window.BasesUI?.refreshState();
+  if (reenquadrar) fitArea(estadosLayer);
+}
+
+function clearStateDetail() {
+  clearStateRelief();
+  if (currentSelectedLayer) {
+    currentSelectedLayer.setStyle({ fillColor: '#ffffff' });
+    currentSelectedLayer = null;
+  }
+  muniLayerByCode.clear();
+  if (municipiosLayer) { municipiosLayer.remove(); municipiosLayer = null; }
+  if (stateOutline) { stateOutline.remove(); stateOutline = null; }
+  if (estadosLayer && !map.hasLayer(estadosLayer)) estadosLayer.addTo(map);
+  for (const [sig, layer] of stateLayers) {
+    layer.bindTooltip(`${ESTADOS[sig].nome} (${sig})`, { sticky: true, opacity: 1 });
+  }
+}
+
+function closeOptions() {}
+
+function selectMunicipality(id, fit = false) {
+  if (currentSelectedLayer && currentSelectedLayer !== muniLayerByCode.get(id)) {
+    currentSelectedLayer.setStyle({ fillColor: '#ffffff' });
+    currentSelectedLayer = null;
+  }
+  selectedMunicipality = id;
+  const target = muniLayerByCode.get(id);
+  if (target) {
+    target.setStyle({ fillColor: '#fecdd3' });
+    currentSelectedLayer = target;
+    if (fit) fitArea(target);
+  }
+  if (window.BasesUI?.selectCity) {
+    window.BasesUI.selectCity(id, fit);
+  }
+}
+
+// Esc retorna ao mapa nacional quando não há um campo de texto em edição.
+document.addEventListener('keydown', event => {
+  if (document.getElementById('squad-dialog').open) return;
+  if (event.key !== 'Escape' || (!siglaAtual && !window.BasesUI?.hasSelection())) return;
+  if (event.target.closest?.('input, select, textarea, [contenteditable="true"]')) return;
+  event.preventDefault();
+  voltarBrasil();
+});
+
+// ── Helpers ───────────────────────────────────────────────
+let loadTimer = null;
+function showLoad(msg, delay = 0) {
+  document.getElementById('lmsg').textContent = msg;
+  clearTimeout(loadTimer);
+  if (delay > 0) {
+    loadTimer = setTimeout(() => {
+      document.getElementById('loading').classList.add('show');
+    }, delay);
+  } else {
+    document.getElementById('loading').classList.add('show');
+  }
+}
+function hideLoad() {
+  clearTimeout(loadTimer);
+  document.getElementById('loading').classList.remove('show');
+}
+function norm(s) { return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
+
+// ── Start ─────────────────────────────────────────────────
+const mapaPronto = carregarEstados();
+</script>
+<script src="squads-ui.js?v=20260922-tag-search"></script>
+<script src="bases-ui.js?v=20260922-squads"></script>
+</body>
+</html>
